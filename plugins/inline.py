@@ -1,117 +1,106 @@
-import logging
-from pyrogram import Client, emoji, filters
+import logging, time, random
+from pyrogram import Client, emoji, filters, enums
+from pyrogram.types import (
+    InlineKeyboardButton, InlineKeyboardMarkup, 
+    InlineQueryResultCachedDocument, InlineQuery, Message
+)
 from pyrogram.errors.exceptions.bad_request_400 import QueryIdInvalid
-from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup, InlineQueryResultCachedDocument, InlineQuery
+
 from database.ia_filterdb import get_search_results
-from utils import is_subscribed, get_size, temp
-from info import CACHE_TIME, AUTH_USERS, AUTH_CHANNEL, CUSTOM_FILE_CAPTION
-from database.connections_mdb import active_connection
+from database.users_chats_db import db
+from utils import is_subscribed, get_size, temp, get_verify_status, update_verify_status
+from info import CACHE_TIME, AUTH_CHANNEL, SUPPORT_LINK, UPDATES_LINK, FILE_CAPTION, IS_VERIFY, VERIFY_EXPIRE, PICS
 
-logger = logging.getLogger(__name__)
-cache_time = 0 if AUTH_USERS or AUTH_CHANNEL else CACHE_TIME
+cache_time = 0 if AUTH_CHANNEL else CACHE_TIME
 
-async def inline_users(query: InlineQuery):
-    if AUTH_USERS:
-        if query.from_user and query.from_user.id in AUTH_USERS:
-            return True
-        else:
-            return False
-    if query.from_user and query.from_user.id not in temp.BANNED_USERS:
-        return True
-    return False
+
+def is_banned(query: InlineQuery):
+    return query.from_user and query.from_user.id in temp.BANNED_USERS
+
 
 @Client.on_inline_query()
-async def answer(bot, query):
-    """𝖲𝗁𝗈𝗐 𝖲𝖾𝖺𝗋𝖼𝗁 𝖱𝖾𝗌𝗎𝗅𝗍𝗌 𝖥𝗈𝗋 𝖦𝗂𝗏𝖾𝗇 𝖨𝗇𝗅𝗂𝗇𝖾 𝖰𝗎𝖾𝗋𝗒"""
-    chat_id = await active_connection(str(query.from_user.id))
-    
-    if not await inline_users(query):
+async def inline_search(bot, query: InlineQuery):
+    """Show search results for given inline query"""
+
+    if is_banned(query):
         await query.answer(results=[],
                            cache_time=0,
-                           switch_pm_text='okDa',
-                           switch_pm_parameter="hehe")
+                           switch_pm_text="You're banned user :(",
+                           switch_pm_parameter="start")
         return
 
-    if AUTH_CHANNEL and not await is_subscribed(bot, query):
+    if AUTH_CHANNEL and await is_subscribed(bot, query, AUTH_CHANNEL):
         await query.answer(results=[],
                            cache_time=0,
-                           switch_pm_text='𝖸𝗈𝗎 𝖧𝖺𝗏𝖾 𝖳𝗈 𝖲𝗎𝖻𝗌𝖼𝗋𝗂𝖻𝖾 𝖬𝗒 𝖢𝗁𝖺𝗇𝗇𝖾𝗅 𝖳𝗈 𝖴𝗌𝖾 𝖬𝖾 :)',
+                           switch_pm_text='ʏᴏᴜ ʜᴀᴠᴇ ᴛᴏ ꜱᴜʙꜱᴄʀɪʙᴇ ᴍʏ ᴄʜᴀɴɴᴇʟ ᴛᴏ ᴜꜱᴇ ᴍᴇ !!',
                            switch_pm_parameter="subscribe")
         return
 
     results = []
-    if '|' in query.query:
-        string, file_type = query.query.split('|', maxsplit=1)
-        string = string.strip()
-        file_type = file_type.strip().lower()
-    else:
-        string = query.query.strip()
-        file_type = None
-
+    string = query.query
     offset = int(query.offset or 0)
-    reply_markup = get_reply_markup(query=string)
-    files, next_offset, total = await get_search_results(
-                                                  chat_id,
-                                                  string,
-                                                  file_type=file_type,
-                                                  max_results=10,
-                                                  offset=offset)
+    files, next_offset, total = await get_search_results(string, offset=offset)
 
     for file in files:
-        title=file.file_name
-        size=get_size(file.file_size)
-        f_caption=file.caption
-        if CUSTOM_FILE_CAPTION:
-            try:
-                f_caption=CUSTOM_FILE_CAPTION.format(file_name= '' if title is None else title, file_size='' if size is None else size, file_caption='' if f_caption is None else f_caption)
-            except Exception as e:
-                logger.exception(e)
-                f_caption=f_caption
-        if f_caption is None:
-            f_caption = f"{file.file_name}"
+        reply_markup = get_reply_markup(query=string)
+        f_caption = FILE_CAPTION.format(
+            file_name=file.file_name,
+            file_size=get_size(file.file_size),
+            caption=file.caption
+        )
         results.append(
             InlineQueryResultCachedDocument(
                 title=file.file_name,
                 document_file_id=file.file_id,
                 caption=f_caption,
-                description=f'Size: {get_size(file.file_size)}\nType: {file.file_type}',
-                reply_markup=reply_markup))
+                description=f'Size: {get_size(file.file_size)}',
+                reply_markup=reply_markup
+            )
+        )
 
-    if results:
-        switch_pm_text = f"{emoji.FILE_FOLDER} 𝖧𝖾𝗋𝖾 𝖨𝗌 𝖳𝗁𝖾 𝖱𝖾𝗌𝗎𝗅𝗍𝗌 "
-        if string:
-            switch_pm_text += f" for {string}"
-        try:
-            await query.answer(results=results,
-                           is_personal = True,
-                           cache_time=cache_time,
-                           switch_pm_text=switch_pm_text,
-                           switch_pm_parameter="start",
-                           next_offset=str(next_offset))
-        except QueryIdInvalid:
-            pass
-        except Exception as e:
-            logging.exception(str(e))
-    else:
-        switch_pm_text = f'{emoji.CROSS_MARK} 𝖭𝗈 𝖱𝖾𝗌𝗎𝗅𝗍𝗌 𝖥𝗈𝗎𝗇𝖽'
-        if string:
-            switch_pm_text += f' for "{string}"'
+    switch_pm_text = f"{emoji.FILE_FOLDER} Results - {total}" if results else f"{emoji.CROSS_MARK} No Results"
+    if string:
+        switch_pm_text += f' For: {string}'
 
-        await query.answer(results=[],
-                           is_personal = True,
-                           cache_time=cache_time,
-                           switch_pm_text=switch_pm_text,
-                           switch_pm_parameter="okay")
+    await query.answer(
+        results=results,
+        is_personal=True,
+        cache_time=cache_time,
+        switch_pm_text=switch_pm_text,
+        switch_pm_parameter="start",
+        next_offset=str(next_offset) if results else ""
+    )
 
 
 def get_reply_markup(query):
     buttons = [
         [
-            InlineKeyboardButton('🔎 𝖲𝖾𝖺𝗋𝖼𝗁 𝖠𝗀𝖺𝗂𝗇', switch_inline_query_current_chat=query),
-            InlineKeyboardButton('⚡𝖴𝗉𝖽𝖺𝗍𝖾𝗌 ⚡', url="https://t.me/grandcinemas")
+            InlineKeyboardButton('🔎 𝖲𝖾𝖺𝗋𝖼𝗁 𝖠𝗀𝖺𝗂𝗇', switch_inline_query_current_chat=query)
+        ],
+        [
+            InlineKeyboardButton('⚡️ ᴜᴘᴅᴀᴛᴇs ᴄʜᴀɴɴᴇʟ ⚡️', url=UPDATES_LINK),
+            InlineKeyboardButton('💡 Support Group 💡', url=SUPPORT_LINK)
         ]
-        ]
+    ]
     return InlineKeyboardMarkup(buttons)
 
+    
 
-
+# ✅ Handle /start subscribe here
+@Client.on_message(filters.private & filters.command("start"))
+async def handle_inline_subscribe(client, message: Message):
+    if len(message.command) > 1 and message.command[1] == "subscribe":
+        btn = await is_subscribed(client, message, AUTH_CHANNEL)
+        if btn:
+            btn.append([InlineKeyboardButton("🔁 Try Again 🔁", callback_data="checksub#inline")])
+            await message.reply_photo(
+                photo=random.choice(PICS),
+                caption=f"👋 Hello {message.from_user.mention},\n\nPlease join the required channels and try again to use inline search. 😇",
+                reply_markup=InlineKeyboardMarkup(btn),
+                parse_mode=enums.ParseMode.HTML
+            )
+        else:
+            await message.reply(
+                f"✅ You’re already subscribed!\n\nTry using inline mode by typing:\n<code>@{temp.U_NAME} filename</code>",
+                parse_mode=enums.ParseMode.HTML
+        )
